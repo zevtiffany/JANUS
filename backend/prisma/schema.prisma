@@ -1,0 +1,758 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ════════════════════════════════════════
+// CORE / AUTH
+// ════════════════════════════════════════
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  firstName String
+  lastName  String
+  avatar    String?
+  isActive  Boolean  @default(true)
+  roleId    String
+  role      Role     @relation(fields: [roleId], references: [id])
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  employee        Employee?
+  journalEntries  JournalEntry[]  @relation("JournalCreator")
+  expenses        Expense[]
+  auditLogs       AuditLog[]
+  threads         Thread[]
+  comments        Comment[]
+  uploadedDocs    Document[]
+  createdFolders  Folder[]
+  notifications   Notification[]
+  managedProjects Project[]       @relation("ProjectManager")
+  assignedTasks   Task[]          @relation("TaskAssignee")
+  timesheets      Timesheet[]
+
+  @@index([email])
+  @@index([roleId])
+}
+
+model Role {
+  id          String           @id @default(uuid())
+  name        String           @unique
+  description String?
+  users       User[]
+  permissions RolePermission[]
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+}
+
+model Permission {
+  id       String           @id @default(uuid())
+  module   String
+  action   String
+  resource String
+  roles    RolePermission[]
+
+  @@unique([module, action, resource])
+}
+
+model RolePermission {
+  id           String     @id @default(uuid())
+  roleId       String
+  permissionId String
+  role         Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission   Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permissionId])
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  action    String
+  module    String
+  entityId  String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([module])
+  @@index([createdAt])
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  type      String
+  title     String
+  message   String
+  isRead    Boolean  @default(false)
+  module    String
+  entityId  String?
+  createdAt DateTime @default(now())
+
+  @@index([userId, isRead])
+}
+
+// ════════════════════════════════════════
+// FINANCE MODULE
+// ════════════════════════════════════════
+
+model Account {
+  id          String      @id @default(uuid())
+  code        String      @unique
+  name        String
+  type        AccountType
+  parentId    String?
+  parent      Account?    @relation("AccountHierarchy", fields: [parentId], references: [id])
+  children    Account[]   @relation("AccountHierarchy")
+  description String?
+  isActive    Boolean     @default(true)
+  balance     Decimal     @default(0) @db.Decimal(15, 2)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  journalLines JournalLine[]
+
+  @@index([type])
+  @@index([code])
+}
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  EXPENSE
+}
+
+model JournalEntry {
+  id          String        @id @default(uuid())
+  entryNumber String        @unique
+  date        DateTime
+  reference   String?
+  description String?
+  status      JournalStatus @default(DRAFT)
+  createdById String
+  createdBy   User          @relation("JournalCreator", fields: [createdById], references: [id])
+  lines       JournalLine[]
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([date])
+  @@index([status])
+}
+
+enum JournalStatus {
+  DRAFT
+  POSTED
+  CANCELLED
+}
+
+model JournalLine {
+  id             String       @id @default(uuid())
+  journalEntryId String
+  journalEntry   JournalEntry @relation(fields: [journalEntryId], references: [id], onDelete: Cascade)
+  accountId      String
+  account        Account      @relation(fields: [accountId], references: [id])
+  debit          Decimal      @default(0) @db.Decimal(15, 2)
+  credit         Decimal      @default(0) @db.Decimal(15, 2)
+  description    String?
+
+  @@index([journalEntryId])
+  @@index([accountId])
+}
+
+model Invoice {
+  id         String        @id @default(uuid())
+  number     String        @unique
+  type       InvoiceType
+  status     InvoiceStatus @default(DRAFT)
+  customerId String?
+  customer   Customer?     @relation(fields: [customerId], references: [id])
+  vendorId   String?
+  vendor     Vendor?       @relation(fields: [vendorId], references: [id])
+  issueDate  DateTime      @default(now())
+  dueDate    DateTime
+  subtotal   Decimal       @db.Decimal(15, 2)
+  tax        Decimal       @default(0) @db.Decimal(15, 2)
+  total      Decimal       @db.Decimal(15, 2)
+  paidAmount Decimal       @default(0) @db.Decimal(15, 2)
+  notes      String?
+  lines      InvoiceLine[]
+  payments   Payment[]
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  @@index([status])
+  @@index([type])
+  @@index([dueDate])
+}
+
+enum InvoiceType {
+  SALES
+  PURCHASE
+}
+
+enum InvoiceStatus {
+  DRAFT
+  SENT
+  PAID
+  PARTIAL
+  OVERDUE
+  CANCELLED
+}
+
+model InvoiceLine {
+  id          String  @id @default(uuid())
+  invoiceId   String
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  productId   String?
+  product     Product? @relation(fields: [productId], references: [id])
+  description String
+  quantity    Decimal @db.Decimal(15, 2)
+  unitPrice   Decimal @db.Decimal(15, 2)
+  total       Decimal @db.Decimal(15, 2)
+
+  @@index([invoiceId])
+}
+
+model Payment {
+  id        String        @id @default(uuid())
+  invoiceId String
+  invoice   Invoice       @relation(fields: [invoiceId], references: [id])
+  amount    Decimal       @db.Decimal(15, 2)
+  method    PaymentMethod @default(BANK_TRANSFER)
+  reference String?
+  date      DateTime      @default(now())
+  createdAt DateTime      @default(now())
+
+  @@index([invoiceId])
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  CREDIT_CARD
+  CHECK
+  OTHER
+}
+
+model Expense {
+  id         String        @id @default(uuid())
+  employeeId String?
+  employee   Employee?     @relation(fields: [employeeId], references: [id])
+  category   String
+  amount     Decimal       @db.Decimal(15, 2)
+  description String
+  status     ExpenseStatus @default(PENDING)
+  date       DateTime      @default(now())
+  receipt    String?
+  createdById String
+  createdBy  User          @relation(fields: [createdById], references: [id])
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  @@index([status])
+  @@index([date])
+}
+
+enum ExpenseStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REIMBURSED
+}
+
+// ════════════════════════════════════════
+// SUPPLY CHAIN / INVENTORY MODULE
+// ════════════════════════════════════════
+
+model Product {
+  id          String   @id @default(uuid())
+  sku         String   @unique
+  name        String
+  description String?
+  categoryId  String?
+  category    Category? @relation(fields: [categoryId], references: [id])
+  unitPrice   Decimal  @db.Decimal(15, 2)
+  costPrice   Decimal  @db.Decimal(15, 2)
+  uom         String   @default("unit")
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  inventoryItems    InventoryItem[]
+  stockMovements    StockMovement[]
+  purchaseOrderLines PurchaseOrderLine[]
+  salesOrderLines   SalesOrderLine[]
+  invoiceLines      InvoiceLine[]
+
+  @@index([sku])
+  @@index([categoryId])
+}
+
+model Category {
+  id          String    @id @default(uuid())
+  name        String    @unique
+  description String?
+  parentId    String?
+  parent      Category? @relation("CategoryHierarchy", fields: [parentId], references: [id])
+  children    Category[] @relation("CategoryHierarchy")
+  products    Product[]
+  createdAt   DateTime  @default(now())
+}
+
+model Warehouse {
+  id       String  @id @default(uuid())
+  name     String
+  location String?
+  isActive Boolean @default(true)
+
+  inventoryItems  InventoryItem[]
+  outMovements    StockMovement[] @relation("MovementFrom")
+  inMovements     StockMovement[] @relation("MovementTo")
+  createdAt       DateTime        @default(now())
+}
+
+model InventoryItem {
+  id           String    @id @default(uuid())
+  productId    String
+  product      Product   @relation(fields: [productId], references: [id])
+  warehouseId  String
+  warehouse    Warehouse @relation(fields: [warehouseId], references: [id])
+  quantity     Decimal   @default(0) @db.Decimal(15, 2)
+  reorderLevel Decimal   @default(0) @db.Decimal(15, 2)
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([productId, warehouseId])
+  @@index([productId])
+  @@index([warehouseId])
+}
+
+model StockMovement {
+  id              String       @id @default(uuid())
+  productId       String
+  product         Product      @relation(fields: [productId], references: [id])
+  fromWarehouseId String?
+  fromWarehouse   Warehouse?   @relation("MovementFrom", fields: [fromWarehouseId], references: [id])
+  toWarehouseId   String?
+  toWarehouse     Warehouse?   @relation("MovementTo", fields: [toWarehouseId], references: [id])
+  quantity        Decimal      @db.Decimal(15, 2)
+  type            MovementType
+  reference       String?
+  notes           String?
+  createdAt       DateTime     @default(now())
+
+  @@index([productId])
+  @@index([createdAt])
+}
+
+enum MovementType {
+  IN
+  OUT
+  TRANSFER
+  ADJUSTMENT
+}
+
+model Vendor {
+  id            String          @id @default(uuid())
+  name          String
+  email         String?
+  phone         String?
+  address       String?
+  contactPerson String?
+  isActive      Boolean         @default(true)
+  invoices      Invoice[]
+  purchaseOrders PurchaseOrder[]
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+}
+
+model Customer {
+  id        String       @id @default(uuid())
+  name      String
+  email     String?
+  phone     String?
+  address   String?
+  isActive  Boolean      @default(true)
+  invoices  Invoice[]
+  salesOrders SalesOrder[]
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+}
+
+model PurchaseOrder {
+  id           String        @id @default(uuid())
+  orderNumber  String        @unique
+  vendorId     String
+  vendor       Vendor        @relation(fields: [vendorId], references: [id])
+  status       OrderStatus   @default(DRAFT)
+  orderDate    DateTime      @default(now())
+  expectedDate DateTime?
+  total        Decimal       @db.Decimal(15, 2)
+  notes        String?
+  lines        PurchaseOrderLine[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([status])
+  @@index([vendorId])
+}
+
+model PurchaseOrderLine {
+  id              String        @id @default(uuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  productId       String
+  product         Product       @relation(fields: [productId], references: [id])
+  quantity        Decimal       @db.Decimal(15, 2)
+  unitPrice       Decimal       @db.Decimal(15, 2)
+  total           Decimal       @db.Decimal(15, 2)
+
+  @@index([purchaseOrderId])
+}
+
+model SalesOrder {
+  id          String         @id @default(uuid())
+  orderNumber String         @unique
+  customerId  String
+  customer    Customer       @relation(fields: [customerId], references: [id])
+  status      OrderStatus    @default(DRAFT)
+  orderDate   DateTime       @default(now())
+  total       Decimal        @db.Decimal(15, 2)
+  notes       String?
+  lines       SalesOrderLine[]
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([status])
+  @@index([customerId])
+}
+
+model SalesOrderLine {
+  id           String     @id @default(uuid())
+  salesOrderId String
+  salesOrder   SalesOrder @relation(fields: [salesOrderId], references: [id], onDelete: Cascade)
+  productId    String
+  product      Product    @relation(fields: [productId], references: [id])
+  quantity     Decimal    @db.Decimal(15, 2)
+  unitPrice    Decimal    @db.Decimal(15, 2)
+  total        Decimal    @db.Decimal(15, 2)
+
+  @@index([salesOrderId])
+}
+
+enum OrderStatus {
+  DRAFT
+  CONFIRMED
+  PROCESSING
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+// ════════════════════════════════════════
+// HRM MODULE (Scaffold)
+// ════════════════════════════════════════
+
+model Employee {
+  id           String     @id @default(uuid())
+  userId       String     @unique
+  user         User       @relation(fields: [userId], references: [id])
+  employeeCode String     @unique
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+  position     String
+  salary       Decimal    @db.Decimal(15, 2)
+  hireDate     DateTime
+  status       EmployeeStatus @default(ACTIVE)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  attendance   Attendance[]
+  leaveRequests LeaveRequest[]
+  payrolls     Payroll[]
+  expenses     Expense[]
+  timesheets   Timesheet[]
+
+  @@index([departmentId])
+  @@index([status])
+}
+
+enum EmployeeStatus {
+  ACTIVE
+  ON_LEAVE
+  TERMINATED
+  SUSPENDED
+}
+
+model Department {
+  id        String     @id @default(uuid())
+  name      String     @unique
+  managerId String?
+  employees Employee[]
+  channels  Channel[]
+  createdAt DateTime   @default(now())
+}
+
+model Attendance {
+  id         String           @id @default(uuid())
+  employeeId String
+  employee   Employee         @relation(fields: [employeeId], references: [id])
+  date       DateTime
+  checkIn    DateTime?
+  checkOut   DateTime?
+  status     AttendanceStatus @default(PRESENT)
+  createdAt  DateTime         @default(now())
+
+  @@unique([employeeId, date])
+  @@index([employeeId])
+  @@index([date])
+}
+
+enum AttendanceStatus {
+  PRESENT
+  ABSENT
+  LATE
+  HALF_DAY
+  ON_LEAVE
+}
+
+model LeaveRequest {
+  id         String      @id @default(uuid())
+  employeeId String
+  employee   Employee    @relation(fields: [employeeId], references: [id])
+  type       String
+  startDate  DateTime
+  endDate    DateTime
+  status     LeaveStatus @default(PENDING)
+  reason     String?
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  @@index([employeeId])
+  @@index([status])
+}
+
+enum LeaveStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model Payroll {
+  id         String        @id @default(uuid())
+  employeeId String
+  employee   Employee      @relation(fields: [employeeId], references: [id])
+  period     String
+  baseSalary Decimal       @db.Decimal(15, 2)
+  deductions Decimal       @default(0) @db.Decimal(15, 2)
+  bonuses    Decimal       @default(0) @db.Decimal(15, 2)
+  netPay     Decimal       @db.Decimal(15, 2)
+  status     PayrollStatus @default(PENDING)
+  createdAt  DateTime      @default(now())
+
+  @@index([employeeId])
+  @@index([period])
+}
+
+enum PayrollStatus {
+  PENDING
+  PROCESSED
+  PAID
+}
+
+// ════════════════════════════════════════
+// PROJECTS MODULE
+// ════════════════════════════════════════
+
+model Project {
+  id          String        @id @default(uuid())
+  name        String
+  description String?
+  status      ProjectStatus @default(PLANNING)
+  startDate   DateTime?
+  endDate     DateTime?
+  budget      Decimal?      @db.Decimal(15, 2)
+  spent       Decimal       @default(0) @db.Decimal(15, 2)
+  managerId   String
+  manager     User          @relation("ProjectManager", fields: [managerId], references: [id])
+  tasks       Task[]
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([status])
+  @@index([managerId])
+}
+
+enum ProjectStatus {
+  PLANNING
+  ACTIVE
+  ON_HOLD
+  COMPLETED
+  CANCELLED
+}
+
+model Task {
+  id             String       @id @default(uuid())
+  projectId      String
+  project        Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  title          String
+  description    String?
+  status         TaskStatus   @default(TODO)
+  priority       TaskPriority @default(MEDIUM)
+  assigneeId     String?
+  assignee       User?        @relation("TaskAssignee", fields: [assigneeId], references: [id])
+  dueDate        DateTime?
+  estimatedHours Decimal?     @db.Decimal(8, 2)
+  actualHours    Decimal      @default(0) @db.Decimal(8, 2)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  timesheets Timesheet[]
+
+  @@index([projectId])
+  @@index([assigneeId])
+  @@index([status])
+}
+
+enum TaskStatus {
+  TODO
+  IN_PROGRESS
+  IN_REVIEW
+  COMPLETED
+  CANCELLED
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+model Timesheet {
+  id          String   @id @default(uuid())
+  taskId      String
+  task        Task     @relation(fields: [taskId], references: [id])
+  employeeId  String?
+  employee    Employee? @relation(fields: [employeeId], references: [id])
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  date        DateTime
+  hours       Decimal  @db.Decimal(8, 2)
+  description String?
+  createdAt   DateTime @default(now())
+
+  @@index([taskId])
+  @@index([userId])
+  @@index([date])
+}
+
+// ════════════════════════════════════════
+// FORUM MODULE (Scaffold)
+// ════════════════════════════════════════
+
+model Channel {
+  id           String      @id @default(uuid())
+  name         String
+  description  String?
+  departmentId String?
+  department   Department? @relation(fields: [departmentId], references: [id])
+  type         ChannelType @default(GENERAL)
+  threads      Thread[]
+  createdAt    DateTime    @default(now())
+}
+
+enum ChannelType {
+  GENERAL
+  DEPARTMENT
+  ANNOUNCEMENT
+}
+
+model Thread {
+  id        String    @id @default(uuid())
+  channelId String
+  channel   Channel   @relation(fields: [channelId], references: [id])
+  title     String
+  content   String
+  authorId  String
+  author    User      @relation(fields: [authorId], references: [id])
+  isPinned  Boolean   @default(false)
+  comments  Comment[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([channelId])
+  @@index([authorId])
+}
+
+model Comment {
+  id        String    @id @default(uuid())
+  threadId  String
+  thread    Thread    @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User      @relation(fields: [authorId], references: [id])
+  content   String
+  parentId  String?
+  parent    Comment?  @relation("CommentReplies", fields: [parentId], references: [id])
+  replies   Comment[] @relation("CommentReplies")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([threadId])
+}
+
+// ════════════════════════════════════════
+// DOCUMENT MODULE (Scaffold)
+// ════════════════════════════════════════
+
+model Document {
+  id           String         @id @default(uuid())
+  name         String
+  filePath     String
+  mimeType     String
+  size         Int
+  version      Int            @default(1)
+  folderId     String?
+  folder       Folder?        @relation(fields: [folderId], references: [id])
+  uploadedById String
+  uploadedBy   User           @relation(fields: [uploadedById], references: [id])
+  links        DocumentLink[]
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  @@index([folderId])
+}
+
+model Folder {
+  id          String     @id @default(uuid())
+  name        String
+  parentId    String?
+  parent      Folder?    @relation("FolderHierarchy", fields: [parentId], references: [id])
+  children    Folder[]   @relation("FolderHierarchy")
+  documents   Document[]
+  createdById String
+  createdBy   User       @relation(fields: [createdById], references: [id])
+  createdAt   DateTime   @default(now())
+}
+
+model DocumentLink {
+  id         String   @id @default(uuid())
+  documentId String
+  document   Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  entityType String
+  entityId   String
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([documentId])
+}
